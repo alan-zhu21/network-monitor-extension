@@ -75,6 +75,9 @@ let currentTabId = null;
 let selectedId = null;
 let renderQueued = false;
 let port = null;
+let view = "requests";     // "requests" | "sites"
+let catFilter = "";        // Sites tab: show only this category
+let currentTabSite = "";
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -83,7 +86,9 @@ const els = {
   statusFilter: $("statusFilter"), siteFilter: $("siteFilter"), thirdOnly: $("thirdOnly"),
   pauseBtn: $("pauseBtn"), clearBtn: $("clearBtn"), exportBtn: $("exportBtn"), exportMenu: $("exportMenu"),
   pausedBanner: $("pausedBanner"), details: $("details"), detailsBody: $("detailsBody"),
-  footerText: $("footerText")
+  footerText: $("footerText"),
+  table: $("table"), sitesView: $("sitesView"), siteCards: $("siteCards"),
+  catChips: $("catChips"), sitesEmpty: $("sitesEmpty")
 };
 
 // Fill the "Any kind" dropdown.
@@ -116,10 +121,14 @@ function connect() {
 async function updateCurrentTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   currentTabId = tab ? tab.id : null;
+  currentTabSite = tab && tab.url ? siteOfHost(hostOfUrl(tab.url)) : "";
   queueRender();
 }
 chrome.tabs.onActivated.addListener(updateCurrentTab);
 chrome.windows.onFocusChanged.addListener(updateCurrentTab);
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (tabId === currentTabId && info.url) updateCurrentTab();
+});
 
 // ---- filtering ------------------------------------------------------------
 
@@ -157,6 +166,7 @@ function render() {
   const scoped = scopedRecords();
   updateSummary(scoped);
   updateSiteOptions(scoped);
+  if (view === "sites") { renderSites(scoped); return; }
 
   const shown = applyFilters(scoped).sort((a, b) => b.start - a.start); // newest first
   const visible = shown.slice(0, MAX_ROWS);
@@ -244,6 +254,177 @@ function updateSiteOptions(list) {
   els.siteFilter.value = current;
 }
 
+// ---- sites view -----------------------------------------------------------
+
+// Sites of the pages being viewed: every top-level page load, plus the current tab.
+function pageSitesOf(list) {
+  const s = new Set();
+  for (const r of list) if (r.type === "main_frame") s.add(r.site);
+  if (currentTabSite && els.scope.value === "tab") s.add(currentTabSite);
+  return s;
+}
+
+function groupBySite(list) {
+  const m = new Map();
+  for (const r of list) {
+    if (!r.site) continue;
+    let g = m.get(r.site);
+    if (!g) m.set(r.site, (g = { site: r.site, records: [] }));
+    g.records.push(r);
+  }
+  return [...m.values()];
+}
+
+function describeSites(list) {
+  const pageSites = pageSitesOf(list);
+  return groupBySite(list).map((g) => ({ ...g, info: classifySite(g.site, g.records, pageSites) }));
+}
+
+function badgeClass(cat) {
+  if (cat === "self" || cat === "related") return "badge self";
+  if (TRACKING_CATEGORIES.has(cat)) return "badge track";
+  if (cat === "unknown") return "badge unknown";
+  return "badge";
+}
+
+function renderSites(scoped) {
+  const groups = describeSites(scoped);
+
+  // Category chips: "All (12)", "Advertising (3)", ...
+  const counts = new Map();
+  for (const g of groups) counts.set(g.info.cat, (counts.get(g.info.cat) || 0) + 1);
+  if (catFilter && !counts.has(catFilter)) catFilter = "";
+  const order = Object.keys(SITE_CATEGORIES).filter((c) => counts.has(c));
+  const chipKey = catFilter + "|" + order.map((c) => c + counts.get(c)).join(",");
+  if (els.catChips.dataset.key !== chipKey) {
+    els.catChips.dataset.key = chipKey;
+    const chips = [chip("", `All (${groups.length})`)];
+    for (const c of order) chips.push(chip(c, `${SITE_CATEGORIES[c].label} (${counts.get(c)})`));
+    els.catChips.replaceChildren(...chips);
+  }
+
+  const q = els.search.value.trim().toLowerCase();
+  const shown = groups.filter((g) => {
+    if (catFilter && g.info.cat !== catFilter) return false;
+    if (!q) return true;
+    const text = [g.site, g.info.owner, g.info.name, SITE_CATEGORIES[g.info.cat].label, ...g.info.hosts.map(([h]) => h)].join(" ").toLowerCase();
+    return text.includes(q);
+  }).sort((a, b) => (b.info.cat === "self") - (a.info.cat === "self") || b.records.length - a.records.length);
+
+  const frag = document.createDocumentFragment();
+  for (const g of shown) frag.append(siteCard(g));
+  els.siteCards.replaceChildren(frag);
+
+  els.sitesEmpty.hidden = shown.length > 0;
+  els.sitesEmpty.textContent = groups.length
+    ? "No sites match."
+    : "No sites yet. Load or refresh a web page to see who it talks to.";
+  const tracking = groups.filter((g) => TRACKING_CATEGORIES.has(g.info.cat)).length;
+  els.footerText.textContent = `${groups.length} sites · ${tracking} ads, analytics or social`;
+}
+
+function chip(cat, text) {
+  const b = document.createElement("button");
+  b.className = "chip" + (cat === catFilter ? " on" : "");
+  b.dataset.cat = cat;
+  b.textContent = text;
+  if (cat) b.title = SITE_CATEGORIES[cat].explain;
+  return b;
+}
+
+function siteCard(g) {
+  const info = g.info;
+  const cat = SITE_CATEGORIES[info.cat];
+  const card = document.createElement("div");
+  card.className = "site-card";
+  card.dataset.site = g.site;
+  card.title = "Show the requests sent to " + g.site;
+
+  const top = document.createElement("div");
+  top.className = "site-top";
+  const name = document.createElement("span");
+  name.className = "site-title";
+  name.textContent = g.site;
+  const count = document.createElement("span");
+  count.className = "site-count";
+  count.textContent = g.records.length === 1 ? "1 request" : `${g.records.length} requests`;
+  top.append(name, count);
+
+  const purpose = document.createElement("div");
+  purpose.className = "site-purpose";
+  const badge = document.createElement("span");
+  badge.className = badgeClass(info.cat);
+  badge.textContent = cat.label;
+  purpose.append(badge);
+  if (info.name || info.owner) {
+    const who = document.createElement("span");
+    who.className = "site-owner";
+    who.textContent = info.name && info.owner && !info.name.includes(info.owner)
+      ? `${info.name} · ${info.owner}` : (info.name || info.owner);
+    purpose.append(who);
+  }
+
+  const explain = document.createElement("div");
+  explain.className = "explain";
+  explain.textContent = cat.explain;
+
+  const how = document.createElement("div");
+  how.className = "site-how";
+  if (info.how === "known") how.textContent = "Known service (from the built-in list)";
+  else if (info.how === "guess") how.textContent = "Best guess: " + info.reason + ".";
+  else if (info.how === "none") how.textContent = "Not enough clues to tell. Check the requests to learn more.";
+  else how.textContent = "";
+
+  const mix = document.createElement("div");
+  mix.className = "site-mix";
+  mix.textContent = trafficSummary(g.records, info);
+
+  card.append(top, purpose, explain);
+  if (how.textContent) card.append(how);
+  card.append(mix);
+  return card;
+}
+
+// "Mostly: Script 10 · Image 4 · via fonts.googleapis.com, …"
+function trafficSummary(records, info) {
+  const kinds = new Map();
+  for (const r of records) {
+    const k = kindOf(r.type).label;
+    kinds.set(k, (kinds.get(k) || 0) + 1);
+  }
+  const parts = [...kinds.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, n]) => `${k} ${n}`);
+  let text = parts.join(" · ");
+  if (info.hosts.length > 1) {
+    const hs = info.hosts.slice(0, 3).map(([h, n]) => {
+      const c = classifyHost(h);
+      const label = c && c !== info.cat ? ` (${SITE_CATEGORIES[c].label.toLowerCase()})` : "";
+      return `${h}${label}`;
+    });
+    text += `  ·  Addresses: ${hs.join(", ")}${info.hosts.length > 3 ? `, +${info.hosts.length - 3} more` : ""}`;
+  }
+  return text;
+}
+
+function setView(v) {
+  view = v;
+  document.body.classList.toggle("view-sites", v === "sites");
+  for (const b of document.querySelectorAll(".tab")) b.classList.toggle("on", b.dataset.view === v);
+  els.table.hidden = v === "sites";
+  els.sitesView.hidden = v !== "sites";
+  if (v === "sites") { els.empty.hidden = true; els.more.hidden = true; closeDetails(); }
+  els.search.placeholder = v === "sites" ? "Search site, company or purpose…" : "Search address or site…";
+  queueRender();
+}
+
+// Purpose line for the request details pane.
+function purposeRow(r) {
+  const list = [...records.values()].filter((x) => x.site === r.site && (els.scope.value !== "tab" || x.tabId === currentTabId));
+  const info = classifySite(r.site, list.length ? list : [r], pageSitesOf(scopedRecords()));
+  const cat = SITE_CATEGORIES[info.cat];
+  const who = info.name || info.owner;
+  return ["Site purpose", cat.label + (who ? ` (${who})` : "") + (info.how === "guess" ? " · best guess" : ""), cat.explain];
+}
+
 // ---- details --------------------------------------------------------------
 
 function showDetails(r, scroll = true) {
@@ -254,6 +435,7 @@ function showDetails(r, scroll = true) {
     ["Address", r.url],
     ["Site", r.site + (r.thirdParty ? " (third-party)" : ""),
       r.thirdParty ? "This went to a different site than the page that asked for it. Often ads, analytics or a content delivery network." : ""],
+    purposeRow(r),
     ["Asked for by", r.initiator || (r.tabId === -1 ? "The browser itself (not a tab)" : "You, by opening the page")],
     ["Kind", k.label, k.explain],
     ["Method", r.method, methodExplain(r.method)],
@@ -328,11 +510,13 @@ const EXPORT_FIELDS = [
   ["server_ip", (r) => r.ip],
   ["initiator", (r) => r.initiator],
   ["redirect_to", (r) => r.redirectTo],
-  ["tab_id", (r) => r.tabId]
+  ["tab_id", (r) => r.tabId],
+  ["site_purpose", (r, p) => p.get(r.site) || ""]
 ];
 
 function exportData(format) {
   const list = applyFilters(scopedRecords()).sort((a, b) => a.start - b.start);
+  const purposes = new Map(describeSites(scopedRecords()).map((g) => [g.site, SITE_CATEGORIES[g.info.cat].label]));
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   let blob, name;
   if (format === "csv") {
@@ -343,11 +527,11 @@ function exportData(format) {
       return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const lines = [EXPORT_FIELDS.map(([h]) => h).join(",")];
-    for (const r of list) lines.push(EXPORT_FIELDS.map(([, f]) => esc(f(r))).join(","));
+    for (const r of list) lines.push(EXPORT_FIELDS.map(([, f]) => esc(f(r, purposes))).join(","));
     blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv" });
     name = `network-log-${stamp}.csv`;
   } else {
-    const out = list.map((r) => Object.fromEntries(EXPORT_FIELDS.map(([h, f]) => [h, f(r)])));
+    const out = list.map((r) => Object.fromEntries(EXPORT_FIELDS.map(([h, f]) => [h, f(r, purposes)])));
     blob = new Blob([JSON.stringify({ exported: new Date().toISOString(), count: out.length, requests: out }, null, 2)], { type: "application/json" });
     name = `network-log-${stamp}.json`;
   }
@@ -362,6 +546,9 @@ function exportData(format) {
 
 function clock(ms) {
   return new Date(ms).toLocaleTimeString([], { hour12: false });
+}
+function hostOfUrl(url) {
+  try { return new URL(url).hostname; } catch (_) { return ""; }
 }
 function pathOf(url) {
   try { const u = new URL(url); return (u.pathname + u.search) || "/"; } catch (_) { return url; }
@@ -390,6 +577,22 @@ els.rows.addEventListener("click", (e) => {
   if (tr && records.has(tr.dataset.id)) showDetails(records.get(tr.dataset.id));
 });
 $("closeDetails").addEventListener("click", closeDetails);
+
+for (const b of document.querySelectorAll(".tab")) b.addEventListener("click", () => setView(b.dataset.view));
+els.catChips.addEventListener("click", (e) => {
+  const b = e.target.closest(".chip");
+  if (!b) return;
+  catFilter = b.dataset.cat === catFilter ? "" : b.dataset.cat;
+  queueRender();
+});
+// Clicking a site card jumps to its requests.
+els.siteCards.addEventListener("click", (e) => {
+  const card = e.target.closest(".site-card");
+  if (!card) return;
+  els.search.value = "";
+  els.siteFilter.value = card.dataset.site;
+  setView("requests");
+});
 
 els.pauseBtn.addEventListener("click", () => port.postMessage({ type: "setPaused", paused: !paused }));
 els.clearBtn.addEventListener("click", () => { closeDetails(); port.postMessage({ type: "clear" }); });

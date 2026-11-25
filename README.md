@@ -25,6 +25,7 @@ Requires Edge or Chrome version 116 or newer.
 - Load or refresh any web page. Requests appear live, newest at the top.
 - The four boxes at the top summarise what you're looking at: total requests, number of different sites contacted, how many went to third parties, and how many failed.
 - **Filters**: search by address, show only this tab or all tabs, filter by kind (script, image, tracking ping...), by result (OK, redirected, errors, failed), by site, or third-party only.
+- **Sites tab**: lists every site the page contacted, how many requests went to it, and what it is probably for (website you're on, advertising, analytics, social media, content delivery, fonts, cookie consent, payments and more). Purposes come from a built-in list of about 340 well-known services. For anything not on the list, the panel makes a **best guess** from the address (for example `cdn.` or `/collect`) and the kind of traffic (tracking pings, tiny images, video, background data) and says why. Use the coloured chips to show one category, and click a site to jump to its requests.
 - **Click a row** for details, with a short explanation of each field (what the status code means, why something failed, what the request type is).
 - **Pause** stops recording, **Clear** erases the log.
 - **Export** saves exactly what the current filters show, as CSV (opens in Excel) or JSON.
@@ -38,6 +39,7 @@ The extension only observes. It doesn't block or change requests, and it never s
 - Requests from other extensions, and from internal pages like `edge://` and `chrome://`, are mostly hidden from extensions by the browser.
 - The log keeps the most recent 5,000 requests. The table draws the newest 500 that match your filters. Export always includes every match.
 - "Third-party" is decided by comparing the site of the request with the site of the page that made it (for example `news.example.com` → `cdn.tracker.com`). It uses a simple rule for domain names rather than a full public-suffix list, so a few unusual domains may be misjudged.
+- Site purposes are offline guesses. The extension does not read page or response contents (that would need the `debugger` permission, which shows a warning banner and makes store approval harder). Known services are reliable; "best guess" labels are hints. To teach it a new service, add a line to `KNOWN_SITES` in `sites.js`.
 - Size comes from the server's `Content-Length` header and is blank when the server doesn't send it.
 
 ## Files
@@ -45,7 +47,8 @@ The extension only observes. It doesn't block or change requests, and it never s
 | --- | --- |
 | `manifest.json` | Extension settings and permissions |
 | `background.js` | Records requests with `chrome.webRequest` and keeps the log |
-| `sidepanel.html` / `.css` / `.js` | The side panel UI: table, filters, details, export |
+| `sidepanel.html` / `.css` / `.js` | The side panel UI: requests table, Sites tab, filters, details, export |
+| `sites.js` | Built-in list of known services and the rules that guess what each site is for |
 | `icons/` | Toolbar and store icons |
 
 ## Publishing later

@@ -30,6 +30,11 @@
       <div class="stat bad"><span id="statFailed">0</span><label>failed / errors</label></div>
     </div>
 
+    <nav class="tabs" role="tablist">
+      <button id="tabRequests" class="tab on" data-view="requests" role="tab" title="Every request, one per row">Requests</button>
+      <button id="tabSites" class="tab" data-view="sites" role="tab" title="Each site contacted, and what it is probably for">Sites</button>
+    </nav>
+
     <div class="filters">
       <input id="search" type="search" placeholder="Search address or site…" aria-label="Search">
       <div class="filter-row">
@@ -37,10 +42,10 @@
           <option value="tab">This tab only</option>
           <option value="all">All tabs</option>
         </select>
-        <select id="typeFilter" aria-label="Request type">
+        <select id="typeFilter" class="req-only" aria-label="Request type">
           <option value="">Any kind</option>
         </select>
-        <select id="statusFilter" aria-label="Result">
+        <select id="statusFilter" class="req-only" aria-label="Result">
           <option value="">Any result</option>
           <option value="ok">OK (2xx)</option>
           <option value="redirect">Redirected (3xx)</option>
@@ -50,7 +55,7 @@
           <option value="pending">Still loading</option>
         </select>
       </div>
-      <div class="filter-row">
+      <div class="filter-row req-only">
         <select id="siteFilter" aria-label="Site">
           <option value="">Any site</option>
         </select>
@@ -75,6 +80,13 @@
     </table>
     <p id="empty" class="empty">No requests yet. Load or refresh a web page to see what it connects to.</p>
     <p id="more" class="more" hidden></p>
+
+    <section id="sitesView" hidden>
+      <p class="sites-intro">Each site this page contacted, and what it is probably for. Purposes come from a built-in list of known services, or are a best guess from the address and the kind of traffic. Click a site to see its requests.</p>
+      <div id="catChips" class="chips"></div>
+      <div id="siteCards"></div>
+      <p id="sitesEmpty" class="empty" hidden></p>
+    </section>
   </main>
 
   <aside id="details" hidden>
@@ -98,6 +110,7 @@
         <li><b>Outgoing</b>: the request your browser sends (the address and method).</li>
         <li><b>Incoming</b>: the response that comes back (the result code, size and content type).</li>
         <li><b>Third-party</b>: the request went to a different site than the page that asked for it. These are often ads, trackers, or content delivery networks.</li>
+        <li><b>Sites tab</b>: groups requests by site and explains what each one is probably for (ads, analytics, fonts, content delivery…). "Known service" comes from a built-in list; "Best guess" is inferred from the address and traffic, so treat it as a hint.</li>
         <li><b>Tracking ping</b>: a small beacon sent mainly to report that something happened, such as a page view or a click.</li>
       </ul>
       <p>This extension only watches. It never blocks, changes or sends your data anywhere. The log stays in your browser and is erased when you close the browser or press Clear.</p>
@@ -106,6 +119,7 @@
     </div>
   </div>
 
+  <script src="sites.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>
