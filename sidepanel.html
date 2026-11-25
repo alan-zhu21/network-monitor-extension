@@ -32,6 +32,7 @@
 
     <nav class="tabs" role="tablist">
       <button id="tabRequests" class="tab on" data-view="requests" role="tab" title="Every request, one per row">Requests</button>
+      <button id="tabTabs" class="tab" data-view="tabs" role="tab" title="Each open tab, the pages it loaded, and where its redirects came from">Tabs</button>
       <button id="tabSites" class="tab" data-view="sites" role="tab" title="Each site contacted, and what it is probably for">Sites</button>
       <button id="tabSummary" class="tab" data-view="summary" role="tab" title="Totals: data sent and received, cookies, security and speed">Summary</button>
     </nav>
@@ -39,7 +40,7 @@
     <div class="filters">
       <input id="search" class="search-box" type="search" placeholder="Search address or site…" aria-label="Search">
       <div class="filter-row">
-        <select id="scope" aria-label="Which tabs">
+        <select id="scope" class="scope-select" aria-label="Which tabs">
           <option value="tab">This tab only</option>
           <option value="all">All tabs</option>
         </select>
@@ -82,6 +83,12 @@
     <p id="empty" class="empty">No requests yet. Load or refresh a web page to see what it connects to.</p>
     <p id="more" class="more" hidden></p>
 
+    <section id="tabsView" hidden>
+      <p class="sites-intro">Every tab you have open, and the network activity that came from it. Open a tab to see the pages it loaded and each redirect chain: where it started, every hop with its code and reason, and where it ended up. Click any step for full details.</p>
+      <div id="tabCards"></div>
+      <p id="tabsEmpty" class="empty" hidden></p>
+    </section>
+
     <section id="sitesView" hidden>
       <p class="sites-intro">Each site this page contacted, and what it is probably for. Purposes come from a built-in list of known services, or are a best guess from the address and the kind of traffic. Click a site to see its requests.</p>
       <div id="catChips" class="chips"></div>
@@ -116,6 +123,8 @@
         <li><b>Outgoing</b>: the request your browser sends (the address and method).</li>
         <li><b>Incoming</b>: the response that comes back (the result code, size and content type).</li>
         <li><b>Third-party</b>: the request went to a different site than the page that asked for it. These are often ads, trackers, or content delivery networks.</li>
+        <li><b>Tabs view</b>: links activity back to the browser tab it came from (by title and address, even after the tab is closed), shows which tab opened which, the pages each tab loaded and how they were started, and every redirect chain step by step. Use the "Which tabs" menu to show the requests of any one tab.</li>
+        <li><b>Redirect</b>: the server (or the browser) answered "go to this other address instead". Several redirects in a row form a chain; chains that cross several sites are common for ad clicks, sign-ins and link tracking. Redirects done by a page's own script show up as a new page load "started by" that site, not as a chain.</li>
         <li><b>Sites tab</b>: groups requests by site and explains what each one is probably for (ads, analytics, fonts, content delivery…). "Known service" comes from a built-in list; "Best guess" is inferred from the address and traffic, so treat it as a hint.</li>
         <li><b>Summary tab</b>: totals for data sent and received, the cookies that were sent and set (first- and third-party, session or kept), how much was encrypted, and the biggest and slowest requests. Header sizes are estimates, and some servers don't report content size, so totals are approximate.</li>
         <li><b>Cookies</b>: small pieces of data sites store in your browser and get back with each request. Only cookie names and sizes are shown, never their values.</li>
@@ -129,6 +138,7 @@
 
   <script src="sites.js"></script>
   <script src="summary.js"></script>
+  <script src="tabs.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

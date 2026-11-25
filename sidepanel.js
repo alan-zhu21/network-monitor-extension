@@ -75,7 +75,8 @@ let currentTabId = null;
 let selectedId = null;
 let renderQueued = false;
 let port = null;
-let view = "requests";     // "requests" | "sites" | "summary"
+let view = "requests";     // "requests" | "tabs" | "sites" | "summary"
+let tabInfo = new Map();   // tabId -> { title, url, favIconUrl, openerTabId, closedAt... } from the background
 let catFilter = "";        // Sites tab: show only this category
 let currentTabSite = "";
 
@@ -89,7 +90,8 @@ const els = {
   footerText: $("footerText"),
   table: $("table"), sitesView: $("sitesView"), siteCards: $("siteCards"),
   catChips: $("catChips"), sitesEmpty: $("sitesEmpty"),
-  summaryView: $("summaryView"), summaryBody: $("summaryBody"), summaryEmpty: $("summaryEmpty")
+  summaryView: $("summaryView"), summaryBody: $("summaryBody"), summaryEmpty: $("summaryEmpty"),
+  tabsView: $("tabsView"), tabCards: $("tabCards"), tabsEmpty: $("tabsEmpty")
 };
 
 // Fill the "Any kind" dropdown.
@@ -112,6 +114,9 @@ function connect() {
       for (const r of msg.records) records.set(r.id, r);
     } else if (msg.type === "paused") {
       setPaused(msg.paused);
+    } else if (msg.type === "tabs") {
+      tabInfo = new Map(msg.tabs.map((t) => [t.id, t]));
+      updateScopeOptions();
     }
     queueRender();
   });
@@ -133,10 +138,57 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
 
 // ---- filtering ------------------------------------------------------------
 
+// The tab the scope dropdown points at: the current tab, a chosen tab, or null for all tabs.
+function scopeTabId() {
+  const v = els.scope.value;
+  if (v === "tab") return currentTabId;
+  if (v.startsWith("t:")) return +v.slice(2);
+  return null;
+}
+
 function scopedRecords() {
   const all = [...records.values()];
-  if (els.scope.value === "tab") return all.filter((r) => r.tabId === currentTabId);
-  return all;
+  const id = scopeTabId();
+  return id === null ? all : all.filter((r) => r.tabId === id);
+}
+
+// Scope dropdown: "This tab only", "All tabs", then every tab by name.
+function updateScopeOptions() {
+  const withActivity = new Set();
+  for (const r of records.values()) withActivity.add(r.tabId);
+  const ids = [...tabInfo.values()]
+    .filter((t) => !t.closedAt || withActivity.has(t.id))
+    .sort((a, b) => !!a.closedAt - !!b.closedAt || a.windowId - b.windowId || a.id - b.id)
+    .map((t) => t.id);
+  if (withActivity.has(-1)) ids.push(-1);
+  const current = els.scope.value;
+  const key = ids.map((id) => id + shortTabLabel(id) + (tabInfo.get(id) || {}).closedAt).join("|");
+  if (els.scope.dataset.key === key) return;
+  els.scope.dataset.key = key;
+  const opts = [new Option("This tab only", "tab"), new Option("All tabs", "all")];
+  const group = document.createElement("optgroup");
+  group.label = "A specific tab";
+  const seen = new Map(); // tabs with the same title get a number: "Inbox", "Inbox (2)"
+  for (const id of ids) {
+    const t = tabInfo.get(id);
+    const name = shortTabLabel(id);
+    const n = (seen.get(name) || 0) + 1;
+    seen.set(name, n);
+    group.append(new Option(name + (n > 1 ? ` (${n})` : "") + (t && t.closedAt ? " (closed)" : ""), "t:" + id));
+  }
+  if (current.startsWith("t:") && !ids.includes(+current.slice(2))) group.append(new Option(shortTabLabel(+current.slice(2)), current));
+  els.scope.replaceChildren(...opts, group);
+  els.scope.value = current;
+}
+
+// Jump to the Requests view, showing only one tab.
+function showTabRequests(id) {
+  updateScopeOptions();
+  const value = id === currentTabId ? "tab" : "t:" + id;
+  if (![...els.scope.options].some((o) => o.value === value)) els.scope.append(new Option(shortTabLabel(id), value));
+  els.scope.value = value;
+  els.search.value = "";
+  setView("requests");
 }
 
 function applyFilters(list) {
@@ -164,9 +216,10 @@ function queueRender() {
 }
 
 function render() {
-  const scoped = scopedRecords();
+  const scoped = view === "tabs" ? [...records.values()] : scopedRecords();
   updateSummary(scoped);
   updateSiteOptions(scoped);
+  if (view === "tabs") { updateScopeOptions(); renderTabs(scoped); return; }
   if (view === "sites") { renderSites(scoped); return; }
   if (view === "summary") { renderSummary(scoped); return; }
 
@@ -181,7 +234,7 @@ function render() {
   if (scoped.length > 0 && shown.length === 0) {
     els.empty.textContent = "Nothing matches these filters.";
   } else {
-    els.empty.textContent = els.scope.value === "tab"
+    els.empty.textContent = scopeTabId() !== null
       ? "No requests from this tab yet. Load or refresh the page to see what it connects to."
       : "No requests yet. Load or refresh a web page to see what it connects to.";
   }
@@ -217,11 +270,25 @@ function rowFor(r) {
     tag.title = "Sent to a different site than the page that asked for it";
     name.append(tag);
   }
+  if (r.hop > 0) {
+    const tag = document.createElement("span");
+    tag.className = "tag redir";
+    tag.textContent = "↪ redirected";
+    tag.title = "The browser was sent here by a redirect from " + r.redirectFrom;
+    name.append(tag);
+  }
   const path = document.createElement("span");
   path.className = "path";
   path.textContent = pathOf(r.url);
   site.append(name, path);
-  site.title = r.url;
+  // When more than one tab is shown, say which tab each request came from.
+  if (scopeTabId() === null) {
+    const tab = document.createElement("span");
+    tab.className = "path tab-of";
+    tab.textContent = "Tab: " + shortTabLabel(r.tabId, 60);
+    site.append(tab);
+  }
+  site.title = r.url + "\nTab: " + tabLabel(r.tabId);
 
   const res = resultOf(r);
   const status = document.createElement("td");
@@ -262,7 +329,7 @@ function updateSiteOptions(list) {
 function pageSitesOf(list) {
   const s = new Set();
   for (const r of list) if (r.type === "main_frame") s.add(r.site);
-  if (currentTabSite && els.scope.value === "tab") s.add(currentTabSite);
+  if (currentTabSite && scopeTabId() === currentTabId && currentTabId !== null) s.add(currentTabSite);
   return s;
 }
 
@@ -428,21 +495,25 @@ function siteDataLine(records) {
 
 function setView(v) {
   view = v;
+  document.body.classList.toggle("view-tabs", v === "tabs");
   document.body.classList.toggle("view-sites", v === "sites");
   document.body.classList.toggle("view-summary", v === "summary");
   for (const b of document.querySelectorAll(".tab")) b.classList.toggle("on", b.dataset.view === v);
   els.table.hidden = v !== "requests";
   els.sitesView.hidden = v !== "sites";
   els.summaryView.hidden = v !== "summary";
+  els.tabsView.hidden = v !== "tabs";
   if (v !== "requests") { els.empty.hidden = true; els.more.hidden = true; closeDetails(); }
   if (v === "summary") els.search.value = "";
-  els.search.placeholder = v === "sites" ? "Search site, company or purpose…" : "Search address or site…";
+  els.search.placeholder = v === "sites" ? "Search site, company or purpose…"
+    : v === "tabs" ? "Search tab title, address or site…" : "Search address or site…";
   queueRender();
 }
 
 // Purpose line for the request details pane.
 function purposeRow(r) {
-  const list = [...records.values()].filter((x) => x.site === r.site && (els.scope.value !== "tab" || x.tabId === currentTabId));
+  const scopeId = scopeTabId();
+  const list = [...records.values()].filter((x) => x.site === r.site && (scopeId === null || x.tabId === scopeId));
   const info = classifySite(r.site, list.length ? list : [r], pageSitesOf(scopedRecords()));
   const cat = SITE_CATEGORIES[info.cat];
   const who = info.name || info.owner;
@@ -464,7 +535,9 @@ function showDetails(r, scroll = true) {
     ["Kind", k.label, k.explain],
     ["Method", r.method, methodExplain(r.method)],
     ["Result", res.label + (r.statusText ? `  ·  ${r.statusText}` : ""), r.error ? (ERRORS[r.error] || r.error) : (STATUS_EXPLAIN[r.status] || "")],
-    r.redirectTo ? ["Sent on to", r.redirectTo] : null,
+    r.redirectFrom ? ["Came from", r.redirectFrom, "The browser was redirected here from this address."] : null,
+    r.redirectTo ? ["Sent on to", r.redirectTo, r.internal ? hopReason(r) : ""] : null,
+    chainRow(r),
     ["Time", new Date(r.start).toLocaleString()],
     ["Took", r.end ? `${Math.round(r.end - r.start)} ms` : "Still loading"],
     ["Size", r.size != null ? formatBytes(r.size) : (r.fromCache ? "Loaded from the browser's cache" : "Not reported by the server")],
@@ -476,7 +549,9 @@ function showDetails(r, scroll = true) {
     cookiesSetRow(r),
     r.contentType ? ["Content type", r.contentType] : null,
     ["Server IP", r.ip || "Not known", r.fromCache ? "Served from the browser's saved copy, so no server was contacted." : ""],
-    ["Tab", r.tabId === -1 ? "None (background)" : String(r.tabId)]
+    tabRow(r),
+    ["Where", "In " + frameLabel(r), r.frameId > 0 ? "Embedded frames are often ads, videos, sign-in boxes or chat widgets from other sites." : ""],
+    r.pageUrl && r.type !== "main_frame" ? ["On page", r.pageUrl, "The page this tab was showing when the request was made."] : null
   ].filter(Boolean);
 
   const dl = document.createElement("dl");
@@ -499,6 +574,25 @@ function showDetails(r, scroll = true) {
   const row = els.rows.querySelector(`tr[data-id="${CSS.escape(r.id)}"]`);
   if (row) row.classList.add("selected");
   if (scroll) els.details.scrollTop = 0;
+}
+
+function tabRow(r) {
+  if (r.tabId === -1) return ["Tab", "None (background)", "Made by the browser itself or another extension, not by a web page."];
+  const t = tabInfo.get(r.tabId);
+  const value = tabLabel(r.tabId) + (t && t.url && t.title ? "\n" + t.url : "") + (t && t.closedAt ? "\n(this tab has been closed)" : "");
+  return ["Tab", value, t && t.openerTabId != null ? "Opened from: " + tabLabel(t.openerTabId) : ""];
+}
+
+// "1. a.com/x → 301 → 2. b.com/y → 302 → 3. c.com/z (200 OK)"
+function chainRow(r) {
+  const hops = chainFor(r);
+  if (!hops || hops.length < 2) return null;
+  const lines = hops.map((h, i) => {
+    const mark = h === r ? "▶ " : "   ";
+    const res = h.state === "redirect" ? `→ ${h.internal ? "browser redirect" : h.status}` : resultOf(h).label;
+    return `${mark}${i + 1}. ${h.url}  (${res})`;
+  });
+  return ["Redirect chain", lines.join("\n"), `Step ${r.hop + 1} of ${hops.length}. ▶ marks this request. The Tabs view shows every chain with explanations.`];
 }
 
 function sentRow(r) {
@@ -570,7 +664,14 @@ const EXPORT_FIELDS = [
   ["server_ip", (r) => r.ip],
   ["initiator", (r) => r.initiator],
   ["redirect_to", (r) => r.redirectTo],
+  ["redirect_from", (r) => r.redirectFrom || ""],
+  ["redirect_chain_id", (r) => r.chainId || ""],
+  ["redirect_step", (r) => r.chainId ? r.hop + 1 : ""],
   ["tab_id", (r) => r.tabId],
+  ["tab_title", (r) => r.tabId === -1 ? "" : tabLabel(r.tabId)],
+  ["tab_url", (r) => (tabInfo.get(r.tabId) || {}).url || ""],
+  ["page_url", (r) => r.pageUrl || ""],
+  ["frame_id", (r) => r.frameId ?? ""],
   ["encrypted", (r) => /^(https|wss):/i.test(r.url) ? "yes" : "no"],
   ["request_header_bytes_est", (r) => r.reqHeaderBytes ?? ""],
   ["request_body_bytes", (r) => r.reqBodyBytes ?? ""],
@@ -654,6 +755,7 @@ els.catChips.addEventListener("click", (e) => {
   queueRender();
 });
 // Clicking a site card jumps to its requests.
+els.tabCards.addEventListener("click", onTabsClick);
 els.siteCards.addEventListener("click", (e) => {
   const card = e.target.closest(".site-card");
   if (!card) return;
