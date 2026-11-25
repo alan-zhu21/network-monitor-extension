@@ -75,7 +75,7 @@ let currentTabId = null;
 let selectedId = null;
 let renderQueued = false;
 let port = null;
-let view = "requests";     // "requests" | "sites"
+let view = "requests";     // "requests" | "sites" | "summary"
 let catFilter = "";        // Sites tab: show only this category
 let currentTabSite = "";
 
@@ -88,7 +88,8 @@ const els = {
   pausedBanner: $("pausedBanner"), details: $("details"), detailsBody: $("detailsBody"),
   footerText: $("footerText"),
   table: $("table"), sitesView: $("sitesView"), siteCards: $("siteCards"),
-  catChips: $("catChips"), sitesEmpty: $("sitesEmpty")
+  catChips: $("catChips"), sitesEmpty: $("sitesEmpty"),
+  summaryView: $("summaryView"), summaryBody: $("summaryBody"), summaryEmpty: $("summaryEmpty")
 };
 
 // Fill the "Any kind" dropdown.
@@ -167,6 +168,7 @@ function render() {
   updateSummary(scoped);
   updateSiteOptions(scoped);
   if (view === "sites") { renderSites(scoped); return; }
+  if (view === "summary") { renderSummary(scoped); return; }
 
   const shown = applyFilters(scoped).sort((a, b) => b.start - a.start); // newest first
   const visible = shown.slice(0, MAX_ROWS);
@@ -379,9 +381,13 @@ function siteCard(g) {
   mix.className = "site-mix";
   mix.textContent = trafficSummary(g.records, info);
 
+  const data = document.createElement("div");
+  data.className = "site-data";
+  data.textContent = siteDataLine(g.records);
+
   card.append(top, purpose, explain);
   if (how.textContent) card.append(how);
-  card.append(mix);
+  card.append(mix, data);
   return card;
 }
 
@@ -405,13 +411,31 @@ function trafficSummary(records, info) {
   return text;
 }
 
+// "↓ 120 KB received · ↑ 4 KB sent · cookies on 12 requests · 3 cookies set"
+function siteDataLine(records) {
+  let sent = 0, recv = 0, unknown = false, withCookies = 0, set = 0;
+  for (const r of records) {
+    const t = trafficOf(r);
+    sent += t.sent; recv += t.recv; unknown = unknown || t.recvUnknown;
+    if (r.cookiesSent && r.cookiesSent.names.length) withCookies++;
+    set += (r.cookiesSet || []).length;
+  }
+  const parts = [`↓ ${formatBytes(recv)}${unknown ? "+" : ""} received`, `↑ ${formatBytes(sent)} sent`];
+  if (withCookies) parts.push(`cookies sent on ${withCookies === 1 ? "1 request" : withCookies + " requests"}`);
+  if (set) parts.push(set === 1 ? "1 cookie set" : `${set} cookies set`);
+  return parts.join(" · ");
+}
+
 function setView(v) {
   view = v;
   document.body.classList.toggle("view-sites", v === "sites");
+  document.body.classList.toggle("view-summary", v === "summary");
   for (const b of document.querySelectorAll(".tab")) b.classList.toggle("on", b.dataset.view === v);
-  els.table.hidden = v === "sites";
+  els.table.hidden = v !== "requests";
   els.sitesView.hidden = v !== "sites";
-  if (v === "sites") { els.empty.hidden = true; els.more.hidden = true; closeDetails(); }
+  els.summaryView.hidden = v !== "summary";
+  if (v !== "requests") { els.empty.hidden = true; els.more.hidden = true; closeDetails(); }
+  if (v === "summary") els.search.value = "";
   els.search.placeholder = v === "sites" ? "Search site, company or purpose…" : "Search address or site…";
   queueRender();
 }
@@ -444,6 +468,12 @@ function showDetails(r, scroll = true) {
     ["Time", new Date(r.start).toLocaleString()],
     ["Took", r.end ? `${Math.round(r.end - r.start)} ms` : "Still loading"],
     ["Size", r.size != null ? formatBytes(r.size) : (r.fromCache ? "Loaded from the browser's cache" : "Not reported by the server")],
+    sentRow(r),
+    r.resHeaderBytes != null && !r.fromCache ? ["Headers in", "About " + formatBytes(r.resHeaderBytes), "Estimated size of the response's headers (extra information the server sent along with the content)."] : null,
+    ["Encrypted", /^(http|ws):/i.test(r.url) ? "No (plain HTTP)" : "Yes (HTTPS)",
+      /^(http|ws):/i.test(r.url) ? "Anyone on the same network could read or change this request." : ""],
+    cookiesSentRow(r),
+    cookiesSetRow(r),
     r.contentType ? ["Content type", r.contentType] : null,
     ["Server IP", r.ip || "Not known", r.fromCache ? "Served from the browser's saved copy, so no server was contacted." : ""],
     ["Tab", r.tabId === -1 ? "None (background)" : String(r.tabId)]
@@ -469,6 +499,36 @@ function showDetails(r, scroll = true) {
   const row = els.rows.querySelector(`tr[data-id="${CSS.escape(r.id)}"]`);
   if (row) row.classList.add("selected");
   if (scroll) els.details.scrollTop = 0;
+}
+
+function sentRow(r) {
+  if (r.reqHeaderBytes == null && !r.reqBodyBytes) return null;
+  const body = r.reqBodyBytes === null ? "an upload of unknown size" : formatBytes(r.reqBodyBytes || 0) + " of uploaded data";
+  return ["Sent", `About ${formatBytes(r.reqHeaderBytes || 0)} of headers + ${body}`,
+    "Header size is an estimate: newer connections (HTTP/2 and HTTP/3) compress headers, so slightly less usually goes over the wire."];
+}
+
+function cookiesSentRow(r) {
+  const c = r.cookiesSent;
+  if (r.reqHeaderBytes == null) return null;
+  if (!c || !c.names.length) return ["Cookies sent", "None"];
+  return ["Cookies sent", `${c.names.length} (${formatBytes(c.bytes)}): ${c.names.join(", ")}`,
+    r.thirdParty ? "Third-party cookies: these let the other site recognise your browser as you move between websites." :
+      "Cookies the site stored earlier, sent back so it can recognise you (sign-in, settings, analytics)."];
+}
+
+function cookiesSetRow(r) {
+  const list = r.cookiesSet || [];
+  if (!list.length) return null;
+  const text = list.map((c) => {
+    const flags = [c.removed ? "deleting it" : c.session ? "session" : "kept after closing"];
+    if (c.secure) flags.push("Secure");
+    if (c.httpOnly) flags.push("HttpOnly");
+    if (c.sameSite) flags.push("SameSite=" + c.sameSite);
+    return `${c.n} (${formatBytes(c.b)}; ${flags.join(", ")})`;
+  }).join("\n");
+  return ["Cookies set", text,
+    "Session cookies are deleted when the browser closes. Secure: only sent over HTTPS. HttpOnly: page scripts can't read it. SameSite: limits sending it from other sites."];
 }
 
 function closeDetails() {
@@ -511,6 +571,14 @@ const EXPORT_FIELDS = [
   ["initiator", (r) => r.initiator],
   ["redirect_to", (r) => r.redirectTo],
   ["tab_id", (r) => r.tabId],
+  ["encrypted", (r) => /^(https|wss):/i.test(r.url) ? "yes" : "no"],
+  ["request_header_bytes_est", (r) => r.reqHeaderBytes ?? ""],
+  ["request_body_bytes", (r) => r.reqBodyBytes ?? ""],
+  ["response_header_bytes_est", (r) => r.resHeaderBytes ?? ""],
+  ["cookies_sent", (r) => r.cookiesSent ? r.cookiesSent.names.length : 0],
+  ["cookie_bytes_sent", (r) => r.cookiesSent ? r.cookiesSent.bytes : 0],
+  ["cookie_names_sent", (r) => r.cookiesSent ? r.cookiesSent.names.join(" ") : ""],
+  ["cookies_set", (r) => (r.cookiesSet || []).map((c) => c.n).join(" ")],
   ["site_purpose", (r, p) => p.get(r.site) || ""]
 ];
 

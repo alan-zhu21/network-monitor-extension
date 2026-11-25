@@ -99,6 +99,86 @@ function siteOf(host) {
   return parts.slice(-n).join(".");
 }
 
+// Rough size of a list of headers as text ("Name: value\r\n" each). Browsers
+// often compress headers on the wire (HTTP/2 and HTTP/3), so treat this as an
+// estimate of the uncompressed size.
+function headerBytes(headers) {
+  if (!headers) return 0;
+  let n = 0;
+  for (const h of headers) n += h.name.length + (h.value ? utf8Len(h.value) : 0) + 4;
+  return n;
+}
+function utf8Len(s) {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : (c >= 0xd800 && c < 0xdc00) ? (i++, 4) : 3;
+  }
+  return n;
+}
+
+// Size of an upload (form or raw data). null when part of it is a file we can't measure.
+function bodyBytes(body) {
+  if (!body) return 0;
+  if (body.error) return null;
+  let n = 0;
+  if (body.formData) {
+    for (const [k, vals] of Object.entries(body.formData)) {
+      for (const v of vals) n += encodeURIComponent(k).length + encodeURIComponent(v).length + 2;
+    }
+  }
+  if (body.raw) {
+    for (const part of body.raw) {
+      if (part.bytes) n += part.bytes.byteLength;
+      else if (part.file) return null;
+    }
+  }
+  return n;
+}
+
+// "a=1; b=2" -> names and size. We keep cookie names and sizes, never values.
+function parseCookieHeader(value) {
+  const names = [];
+  for (const part of value.split(";")) {
+    const p = part.trim();
+    if (!p) continue;
+    const eq = p.indexOf("=");
+    names.push(eq < 0 ? p : p.slice(0, eq));
+  }
+  return { names, bytes: utf8Len(value) };
+}
+
+// One Set-Cookie header -> name, size and its settings (no value).
+function parseSetCookie(value) {
+  const parts = value.split(";");
+  const first = parts.shift() || "";
+  const eq = first.indexOf("=");
+  const c = {
+    n: (eq < 0 ? first : first.slice(0, eq)).trim(),
+    b: utf8Len(value),           // size of the whole Set-Cookie line
+    session: true,               // no expiry: deleted when the browser closes
+    removed: false,              // the server is deleting the cookie
+    secure: false, httpOnly: false, sameSite: ""
+  };
+  for (const raw of parts) {
+    const a = raw.trim();
+    const i = a.indexOf("=");
+    const key = (i < 0 ? a : a.slice(0, i)).toLowerCase();
+    const val = i < 0 ? "" : a.slice(i + 1).trim();
+    if (key === "expires") {
+      c.session = false;
+      const t = Date.parse(val);
+      if (!isNaN(t) && t < Date.now()) c.removed = true;
+    } else if (key === "max-age") {
+      c.session = false;
+      if (+val <= 0) c.removed = true;
+    } else if (key === "secure") c.secure = true;
+    else if (key === "httponly") c.httpOnly = true;
+    else if (key === "samesite") c.sameSite = val.toLowerCase();
+  }
+  return c;
+}
+
 function getHeader(headers, name) {
   if (!headers) return undefined;
   const h = headers.find((x) => x.name.toLowerCase() === name);
@@ -108,6 +188,12 @@ function getHeader(headers, name) {
 // ---- webRequest listeners -------------------------------------------------
 
 const FILTER = { urls: ["<all_urls>"] };
+
+// Chrome and Edge hide Cookie / Set-Cookie headers unless "extraHeaders" is
+// asked for. Only ask when the browser supports it, so other browsers still work.
+function withExtra(spec, optionsEnum) {
+  return optionsEnum && optionsEnum.EXTRA_HEADERS ? [...spec, optionsEnum.EXTRA_HEADERS] : spec;
+}
 
 chrome.webRequest.onBeforeRequest.addListener((d) => {
   if (!loaded || paused || isOwnRequest(d)) return;
@@ -132,7 +218,14 @@ chrome.webRequest.onBeforeRequest.addListener((d) => {
     statusText: "",
     fromCache: false,
     ip: "",
+    secure: /^(https|wss):/i.test(d.url),
     size: null,             // bytes, from Content-Length when the server sends it
+    reqHeaderBytes: null,   // estimated size of the request line + headers
+    reqBodyBytes: bodyBytes(d.requestBody), // uploaded data; null if unknown
+    resHeaderBytes: null,   // estimated size of the status line + response headers
+    firstByte: null,        // time the response headers arrived
+    cookiesSent: null,      // { names: [...], bytes } from the Cookie header
+    cookiesSet: [],         // parsed Set-Cookie headers (names and settings, no values)
     contentType: "",
     redirectTo: "",
     error: ""
@@ -146,18 +239,36 @@ chrome.webRequest.onBeforeRequest.addListener((d) => {
   }
   queuePush(record);
   scheduleSave();
-}, FILTER);
+}, FILTER, ["requestBody"]);
+
+chrome.webRequest.onSendHeaders.addListener((d) => {
+  const r = byId.get(d.requestId);
+  if (!r) return;
+  let line = 0;
+  try { const u = new URL(d.url); line = d.method.length + (u.pathname + u.search).length + 12 + u.host.length + 8; } catch (_) {}
+  r.reqHeaderBytes = line + headerBytes(d.requestHeaders);
+  const cookie = getHeader(d.requestHeaders, "cookie");
+  r.cookiesSent = cookie ? parseCookieHeader(cookie) : null;
+  queuePush(r);
+}, FILTER, withExtra(["requestHeaders"], chrome.webRequest.OnSendHeadersOptions));
 
 chrome.webRequest.onHeadersReceived.addListener((d) => {
   const r = byId.get(d.requestId);
   if (!r) return;
   r.status = d.statusCode;
   r.statusText = d.statusLine || "";
+  r.firstByte = d.timeStamp;
+  r.resHeaderBytes = (d.statusLine || "").length + 2 + headerBytes(d.responseHeaders);
   const len = getHeader(d.responseHeaders, "content-length");
   if (len && !isNaN(+len)) r.size = +len;
   r.contentType = (getHeader(d.responseHeaders, "content-type") || "").split(";")[0];
+  r.cookiesSet = [];
+  for (const h of d.responseHeaders || []) {
+    if (h.name.toLowerCase() !== "set-cookie" || !h.value) continue;
+    for (const line of h.value.split("\n")) if (line.trim()) r.cookiesSet.push(parseSetCookie(line));
+  }
   queuePush(r);
-}, FILTER, ["responseHeaders"]);
+}, FILTER, withExtra(["responseHeaders"], chrome.webRequest.OnHeadersReceivedOptions));
 
 chrome.webRequest.onBeforeRedirect.addListener((d) => {
   const r = byId.get(d.requestId);

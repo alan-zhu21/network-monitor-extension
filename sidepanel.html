@@ -33,10 +33,11 @@
     <nav class="tabs" role="tablist">
       <button id="tabRequests" class="tab on" data-view="requests" role="tab" title="Every request, one per row">Requests</button>
       <button id="tabSites" class="tab" data-view="sites" role="tab" title="Each site contacted, and what it is probably for">Sites</button>
+      <button id="tabSummary" class="tab" data-view="summary" role="tab" title="Totals: data sent and received, cookies, security and speed">Summary</button>
     </nav>
 
     <div class="filters">
-      <input id="search" type="search" placeholder="Search address or site…" aria-label="Search">
+      <input id="search" class="search-box" type="search" placeholder="Search address or site…" aria-label="Search">
       <div class="filter-row">
         <select id="scope" aria-label="Which tabs">
           <option value="tab">This tab only</option>
@@ -87,6 +88,11 @@
       <div id="siteCards"></div>
       <p id="sitesEmpty" class="empty" hidden></p>
     </section>
+
+    <section id="summaryView" hidden>
+      <div id="summaryBody"></div>
+      <p id="summaryEmpty" class="empty" hidden></p>
+    </section>
   </main>
 
   <aside id="details" hidden>
@@ -111,6 +117,8 @@
         <li><b>Incoming</b>: the response that comes back (the result code, size and content type).</li>
         <li><b>Third-party</b>: the request went to a different site than the page that asked for it. These are often ads, trackers, or content delivery networks.</li>
         <li><b>Sites tab</b>: groups requests by site and explains what each one is probably for (ads, analytics, fonts, content delivery…). "Known service" comes from a built-in list; "Best guess" is inferred from the address and traffic, so treat it as a hint.</li>
+        <li><b>Summary tab</b>: totals for data sent and received, the cookies that were sent and set (first- and third-party, session or kept), how much was encrypted, and the biggest and slowest requests. Header sizes are estimates, and some servers don't report content size, so totals are approximate.</li>
+        <li><b>Cookies</b>: small pieces of data sites store in your browser and get back with each request. Only cookie names and sizes are shown, never their values.</li>
         <li><b>Tracking ping</b>: a small beacon sent mainly to report that something happened, such as a page view or a click.</li>
       </ul>
       <p>This extension only watches. It never blocks, changes or sends your data anywhere. The log stays in your browser and is erased when you close the browser or press Clear.</p>
@@ -120,6 +128,7 @@
   </div>
 
   <script src="sites.js"></script>
+  <script src="summary.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>
